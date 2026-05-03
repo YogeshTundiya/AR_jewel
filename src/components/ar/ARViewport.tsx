@@ -6,7 +6,8 @@ import { getHandLandmarker, getFaceLandmarker, disposeDetectors } from "@/lib/me
 import type { JewelryProduct, CategoryInfo } from "@/lib/jewelry-catalog";
 import { PRODUCTS } from "@/lib/jewelry-catalog";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Environment, useGLTF } from "@react-three/drei";
+import { Environment, ContactShadows, useGLTF } from "@react-three/drei";
+import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import * as THREE from "three";
 
 /* ------------------------------------------------------------------ */
@@ -204,9 +205,24 @@ function ARModel({
 
   return (
     <group>
-      <primitive ref={meshRef1} object={scene} />
+      <group ref={meshRef1}>
+        <primitive object={scene} />
+        {/* Occlusion mask to hide the back of the ring so it wraps around the finger */}
+        {product.placement === "ring-finger" && (
+          <mesh renderOrder={-1} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, -0.1]}>
+            <cylinderGeometry args={[0.38, 0.38, 2, 32]} />
+            <meshBasicMaterial colorWrite={false} depthWrite={true} />
+          </mesh>
+        )}
+        {/* Realistic contact shadow on the skin */}
+        <ContactShadows position={[0, 0, -0.3]} opacity={0.6} scale={2} blur={1.5} far={1} />
+      </group>
+
       {product.placement === "ears" && clonedScene && (
-        <primitive ref={meshRef2} object={clonedScene} />
+        <group ref={meshRef2}>
+          <primitive object={clonedScene} />
+          <ContactShadows position={[0, 0, -0.3]} opacity={0.6} scale={2} blur={1.5} far={1} />
+        </group>
       )}
     </group>
   );
@@ -609,6 +625,11 @@ export default function ARViewport({ product, categoryInfo }: Props) {
             <spotLight position={[10, 20, 10]} intensity={3} angle={0.2} penumbra={1} decay={0} />
             <pointLight position={[-10, -10, -10]} intensity={1.5} decay={0} />
             <Environment preset="studio" />
+
+            {/* Post-Processing for Diamond Sparkle/Bloom */}
+            <EffectComposer>
+              <Bloom luminanceThreshold={0.8} luminanceSmoothing={0.9} intensity={1.2} />
+            </EffectComposer>
 
             <Suspense fallback={null}>
               <ARModel
