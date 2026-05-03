@@ -205,7 +205,7 @@ export default function ARTryOnPage() {
           {/* ============================================================ */}
           <div className="flex-1 h-[60vh] sm:h-[65vh] lg:h-[80vh] rounded-3xl overflow-hidden glass-panel relative">
             <ARViewport
-              key={`${selectedProduct.id}-${activeCategory}`}
+              key={activeCategory}
               product={selectedProduct}
               categoryInfo={categoryInfo}
             />

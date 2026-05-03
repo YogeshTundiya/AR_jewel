@@ -8,7 +8,7 @@ const features = [
   {
     icon: Scan,
     title: "Face Tracking",
-    desc: "MindAR.js detects 468 facial landmarks for precise earring and necklace placement.",
+    desc: "Google MediaPipe Vision detects 468 facial landmarks for precise earring and necklace placement.",
   },
   {
     icon: Hand,
