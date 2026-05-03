@@ -44,7 +44,7 @@ function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
 }
 
-const SMOOTH_FACTOR = 0.35;
+const SMOOTH_FACTOR = 0.15; // Lowered for extremely smooth tracking with less jitter
 
 /* ------------------------------------------------------------------ */
 /*  CameraSync — keeps OrthographicCamera frustum in pixel units       */
@@ -119,6 +119,30 @@ function ARModel({
 
   useEffect(() => {
     if (!scene) return;
+    
+    // Enhance 3D Materials for High-Quality Jewelry Rendering
+    scene.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mesh = obj as THREE.Mesh;
+        const enhanceMaterial = (mat: THREE.Material) => {
+          if ('envMapIntensity' in mat) {
+            (mat as THREE.MeshStandardMaterial).envMapIntensity = 3.5; // Boost environment reflections for maximum shine
+          }
+          if ('metalness' in mat) {
+            (mat as THREE.MeshStandardMaterial).metalness = 1.0; // Force full metallic appearance
+            (mat as THREE.MeshStandardMaterial).roughness = Math.min((mat as THREE.MeshStandardMaterial).roughness, 0.15); // Ensure surface is polished
+          }
+          mat.needsUpdate = true;
+        };
+
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach(enhanceMaterial);
+        } else {
+          enhanceMaterial(mesh.material);
+        }
+      }
+    });
+
     // Compute normalized scale so model fits a ~1 unit bounding box
     const box = new THREE.Box3().setFromObject(scene);
     const sizeVec = box.getSize(new THREE.Vector3());
@@ -580,10 +604,11 @@ export default function ARViewport({ product, categoryInfo }: Props) {
             {/* Sync camera frustum to exact DOM pixel dimensions */}
             <CameraSync domSizeRef={domSizeRef} />
 
-            {/* Lighting */}
-            <ambientLight intensity={1.5} />
-            <directionalLight position={[10, 10, 5]} intensity={2} />
-            <Environment preset="city" />
+            {/* High-End Jewelry Studio Lighting */}
+            <ambientLight intensity={0.8} />
+            <spotLight position={[10, 20, 10]} intensity={3} angle={0.2} penumbra={1} decay={0} />
+            <pointLight position={[-10, -10, -10]} intensity={1.5} decay={0} />
+            <Environment preset="studio" />
 
             <Suspense fallback={null}>
               <ARModel
