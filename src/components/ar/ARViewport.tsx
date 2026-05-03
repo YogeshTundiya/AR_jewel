@@ -338,8 +338,8 @@ export default function ARViewport({ product, categoryInfo }: Props) {
             s.angle = s.w === 0 ? angle : lerp(s.angle, angle, SMOOTH_FACTOR);
 
           } else if (product.placement === "ears") {
-            const leftEar = landmarks[234];
-            const rightEar = landmarks[454];
+            const leftEar = landmarks[177]; // Lower earlobe left
+            const rightEar = landmarks[401]; // Lower earlobe right
             const forehead = landmarks[10];
             const chin = landmarks[152];
 
@@ -349,14 +349,14 @@ export default function ARViewport({ product, categoryInfo }: Props) {
             const pChin = getDomCoords(chin.x, chin.y, domW, domH, vw, vh);
 
             const faceHeight = Math.abs(pForehead.y - pChin.y);
-            const earringSize = faceHeight * 0.3;
+            const earringSize = faceHeight * 0.25;
             const angle = Math.atan2(pRightEar.y - pLeftEar.y, pRightEar.x - pLeftEar.x);
 
-            const lx = pLeftEar.x - earringSize * 0.15;
-            const ly = pLeftEar.y + earringSize * 0.4;
+            const lx = pLeftEar.x;
+            const ly = pLeftEar.y + earringSize * 0.1;
 
-            const rx = pRightEar.x + earringSize * 0.15;
-            const ry = pRightEar.y + earringSize * 0.4;
+            const rx = pRightEar.x;
+            const ry = pRightEar.y + earringSize * 0.1;
 
             const s = smoothRef.current;
             s.x = s.w === 0 ? lx : lerp(s.x, lx, SMOOTH_FACTOR);
@@ -472,7 +472,7 @@ export default function ARViewport({ product, categoryInfo }: Props) {
       }
       disposeDetectors();
     };
-  }, [categoryInfo.camera, product.trackingMode, detect]);
+  }, [categoryInfo.camera, product.trackingMode]);
 
   const statusColor = status === "loading"
     ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
@@ -508,25 +508,40 @@ export default function ARViewport({ product, categoryInfo }: Props) {
     const r3fCanvas = container.querySelector("canvas");
 
     const shotCanvas = document.createElement("canvas");
-    shotCanvas.width = video.videoWidth;
-    shotCanvas.height = video.videoHeight;
+    
+    // Match the exact DOM dimensions where the user sees the output
+    const domW = container.clientWidth;
+    const domH = container.clientHeight;
+    shotCanvas.width = domW;
+    shotCanvas.height = domH;
     const ctx = shotCanvas.getContext("2d")!;
 
+    // Calculate object-cover dimensions to correctly slice the raw video
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const S = Math.max(domW / vw, domH / vh);
+    const drawW = vw * S;
+    const drawH = vh * S;
+    const offsetX = (domW - drawW) / 2;
+    const offsetY = (domH - drawH) / 2;
+
     if (isMirrored) {
-      ctx.translate(shotCanvas.width, 0);
+      ctx.translate(domW, 0);
       ctx.scale(-1, 1);
     }
-    ctx.drawImage(video, 0, 0);
+    // Draw cropped video exactly as object-cover does
+    ctx.drawImage(video, offsetX, offsetY, drawW, drawH);
     if (isMirrored) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
 
     if (r3fCanvas) {
       if (isMirrored) {
-        ctx.translate(shotCanvas.width, 0);
+        ctx.translate(domW, 0);
         ctx.scale(-1, 1);
       }
-      ctx.drawImage(r3fCanvas, 0, 0, shotCanvas.width, shotCanvas.height);
+      // R3F canvas natively matches the DOM container dimensions
+      ctx.drawImage(r3fCanvas, 0, 0, domW, domH);
       if (isMirrored) {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
       }
