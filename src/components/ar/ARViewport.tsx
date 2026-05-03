@@ -112,11 +112,11 @@ function ARModel({ product, smoothRef, domSizeRef, onLoaded }: {
               transmission: 1,
               thickness: 1.5,
               ior: 2.417, // Real diamond IOR
-              //@ts-expect-error - dispersion is available in r170+
-              dispersion: 15.0, // High dispersion for fire/sparkle
-              envMapIntensity: 5.0,
               transparent: true,
+              envMapIntensity: 5.0,
             });
+            // Use type assertion to set dispersion without IDE errors
+            (gemstone as any).dispersion = 15.0;
             mesh.material = gemstone;
           } 
           // Metal Enhancement
@@ -377,7 +377,6 @@ export default function ARViewport({ product, categoryInfo }: Props) {
   }, [categoryInfo.camera, product.trackingMode]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     initAR();
     return () => {
       cancelAnimationFrame(rafRef.current);
