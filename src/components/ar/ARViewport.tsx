@@ -242,6 +242,7 @@ export default function ARViewport({ product, categoryInfo }: Props) {
   });
 
   const [status, setStatus] = useState<ARStatus>("loading");
+  const [errorMessage, setErrorMessage] = useState<string>("");
   const [detected, setDetected] = useState(false);
   const [modelLoading, setModelLoading] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
@@ -368,13 +369,33 @@ export default function ARViewport({ product, categoryInfo }: Props) {
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
       if (product.trackingMode === "hand") await getHandLandmarker(); else await getFaceLandmarker();
-      if (currentInit === initCountRef.current) setStatus("ready");
+      if (currentInit === initCountRef.current) {
+        console.log("AR Engine Ready");
+        setStatus("ready");
+      }
     } catch (err: unknown) {
-      console.error("Init error:", err);
+      console.error("AR Init error detail:", err);
       const error = err as Error;
-      if (currentInit === initCountRef.current) setStatus(error.name === "NotAllowedError" ? "denied" : "error");
+      if (currentInit === initCountRef.current) {
+        setStatus(error.name === "NotAllowedError" ? "denied" : "error");
+        setErrorMessage(error.message || "Failed to initialize camera or AI models");
+      }
     }
   }, [categoryInfo.camera, product.trackingMode]);
+
+  // Loading Timeout Safety
+  useEffect(() => {
+    if (status === "loading") {
+      const timer = setTimeout(() => {
+        if (status === "loading") {
+          console.warn("AR Initialization timed out after 10s");
+          setStatus("error");
+          setErrorMessage("Loading is taking longer than expected. Please check your internet connection and camera permissions.");
+        }
+      }, 10000);
+      return () => clearTimeout(timer);
+    }
+  }, [status]);
 
   useEffect(() => {
     initAR();
@@ -490,7 +511,7 @@ export default function ARViewport({ product, categoryInfo }: Props) {
             </div>
             <h3 className="text-2xl font-light mb-4 tracking-tight">Camera Unavailable</h3>
             <p className="text-white/40 text-sm max-w-[320px] leading-relaxed mb-10">
-              {status === "denied" ? "Please enable camera access to try on our exquisite collections." : "We encountered an error connecting to your camera."}
+              {errorMessage || (status === "denied" ? "Please enable camera access to try on our exquisite collections." : "We encountered an error connecting to your camera.") }
             </p>
             <button onClick={() => initAR()} className="flex items-center gap-4 px-10 py-4 bg-white text-black rounded-full text-xs uppercase tracking-[0.25em] font-semibold hover:bg-neutral-200 transition-all active:scale-95 shadow-2xl">
               <RefreshCcw className="w-4 h-4" /> Retry
