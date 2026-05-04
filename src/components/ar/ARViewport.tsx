@@ -47,26 +47,26 @@ const trackingData = {
 /*  3D Model Configuration                                            */
 /* ------------------------------------------------------------------ */
 const modelConfig: Record<string, { url: string; baseScale: number; baseRotation: [number, number, number] }> = {
-  "ring-diamond": { url: "/3D/ring-diamond.glb", baseScale: 0.15, baseRotation: [Math.PI / 2, 0, 0] },
-  "ring-sapphire": { url: "/3D/ring-diamond.glb", baseScale: 0.15, baseRotation: [Math.PI / 2, 0, 0] }, // Fallback
-  "bracelet-gold": { url: "/3D/bracelet-gold.glb", baseScale: 0.25, baseRotation: [Math.PI / 2, 0, 0] },
-  "necklace-gold": { url: "/3D/necklace-gold.glb", baseScale: 0.4, baseRotation: [0, 0, 0] },
-  "necklace-pearl": { url: "/3D/necklace-pearl.glb", baseScale: 0.4, baseRotation: [0, 0, 0] },
-  "earring-diamond": { url: "/3D/earrings-diamond.glb", baseScale: 0.1, baseRotation: [0, 0, 0] },
-  "earring-hoop": { url: "/3D/earrings-hoop.glb", baseScale: 0.1, baseRotation: [0, 0, 0] }
+  "ring-diamond": { url: "/3D/ring-diamond.glb", baseScale: 1.8, baseRotation: [Math.PI / 2, 0, 0] },
+  "ring-sapphire": { url: "/3D/ring-diamond.glb", baseScale: 1.8, baseRotation: [Math.PI / 2, 0, 0] },
+  "bracelet-gold": { url: "/3D/bracelet-gold.glb", baseScale: 2.5, baseRotation: [Math.PI / 2, 0, 0] },
+  "necklace-gold": { url: "/3D/necklace-gold.glb", baseScale: 3.0, baseRotation: [0, 0, 0] },
+  "necklace-pearl": { url: "/3D/necklace-pearl.glb", baseScale: 3.0, baseRotation: [0, 0, 0] },
+  "earring-diamond": { url: "/3D/earrings-diamond.glb", baseScale: 1.5, baseRotation: [0, 0, 0] },
+  "earring-hoop": { url: "/3D/earrings-hoop.glb", baseScale: 1.5, baseRotation: [0, 0, 0] }
 };
 
-// Preload models so they instantly appear when switching
-if (typeof window !== "undefined") {
-  Object.values(modelConfig).forEach((config) => {
-    useGLTF.preload(config.url);
-  });
-}
-
 function GLTFModelNode({ url }: { url: string }) {
-  const { scene } = useGLTF(url);
-  // Clone scene so we can use it multiple times (e.g. for two earrings)
-  const clonedScene = useMemo(() => scene.clone(), [scene]);
+  // Pass `true` as 2nd arg to enable Draco decoding via CDN WASM
+  const { scene } = useGLTF(url, true);
+  const clonedScene = useMemo(() => {
+    const clone = scene.clone();
+    // Center the model at origin based on its bounding box
+    const box = new THREE.Box3().setFromObject(clone);
+    const center = box.getCenter(new THREE.Vector3());
+    clone.position.sub(center);
+    return clone;
+  }, [scene]);
   return <primitive object={clonedScene} />;
 }
 
