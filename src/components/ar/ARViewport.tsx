@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, Suspense } from "react";
 import { getHandLandmarker, getFaceLandmarker, disposeDetectors } from "@/lib/mediapipe";
 import type { JewelryProduct, CategoryInfo } from "@/lib/jewelry-catalog";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Environment, OrthographicCamera, ContactShadows } from "@react-three/drei";
+import * as THREE from "three";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -20,7 +23,6 @@ interface SmoothedValues {
   w: number;
   h: number;
   angle: number;
-  // Earring second point
   x2: number;
   y2: number;
   w2: number;
@@ -34,15 +36,136 @@ function lerp(a: number, b: number, t: number) {
 
 const SMOOTH_FACTOR = 0.3;
 
+// Global tracking data to avoid React state overhead
+const trackingData = {
+  active: false,
+  x: 0, y: 0, w: 100, h: 100, angle: 0,
+  x2: 0, y2: 0, w2: 100, h2: 100, angle2: 0,
+};
+
+/* ------------------------------------------------------------------ */
+/*  3D Model Component (Phase 3 HDRI Lighting)                         */
+/* ------------------------------------------------------------------ */
+function ARModel({ product }: { product: JewelryProduct }) {
+  const meshRef1 = useRef<THREE.Group>(null);
+  const meshRef2 = useRef<THREE.Group>(null);
+  const { size } = useThree();
+
+  useFrame(() => {
+    if (!trackingData.active) {
+      if (meshRef1.current) meshRef1.current.visible = false;
+      if (meshRef2.current) meshRef2.current.visible = false;
+      return;
+    }
+    
+    // trackingData contains coordinates relative to the DOM container
+    const w = size.width;
+    const h = size.height;
+    
+    const px1 = trackingData.x - w / 2;
+    const py1 = -(trackingData.y - h / 2);
+    
+    if (meshRef1.current) {
+      meshRef1.current.visible = true;
+      meshRef1.current.position.set(px1, py1, 0);
+      meshRef1.current.rotation.z = -trackingData.angle;
+      const scale = trackingData.w;
+      meshRef1.current.scale.set(scale, scale, scale);
+    }
+    
+    if (meshRef2.current && product.placement === "ears") {
+      meshRef2.current.visible = true;
+      const px2 = trackingData.x2 - w / 2;
+      const py2 = -(trackingData.y2 - h / 2);
+      meshRef2.current.position.set(px2, py2, 0);
+      meshRef2.current.rotation.z = -trackingData.angle2;
+      meshRef2.current.scale.set(trackingData.w2, trackingData.w2, trackingData.w2);
+    } else if (meshRef2.current) {
+      meshRef2.current.visible = false;
+    }
+  });
+
+  const isGold = product.name.toLowerCase().includes("gold");
+  const jewelryMaterial = new THREE.MeshStandardMaterial({
+    color: isGold ? "#ffcf40" : "#e0e5ec",
+    metalness: 1.0,
+    roughness: 0.05,
+    envMapIntensity: 2.5
+  });
+
+  const diamondMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#ffffff",
+    metalness: 0.1,
+    roughness: 0.0,
+    transmission: 0.9,
+    ior: 2.4,
+    thickness: 0.5,
+    envMapIntensity: 3.0
+  });
+
+  // Render placeholder high-end geometry based on category
+  let geometryNode1;
+  
+  if (product.category === "ring") {
+    geometryNode1 = (
+      <group>
+        <mesh material={jewelryMaterial} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.4, 0.08, 32, 100]} />
+        </mesh>
+        {!isGold && (
+          <mesh material={diamondMaterial} position={[0, -0.4, 0.1]}>
+            <octahedronGeometry args={[0.2]} />
+          </mesh>
+        )}
+      </group>
+    );
+  } else if (product.category === "bracelet") {
+    geometryNode1 = (
+      <mesh material={jewelryMaterial}>
+        <torusGeometry args={[0.45, 0.06, 32, 100]} />
+      </mesh>
+    );
+  } else if (product.category === "necklace") {
+    geometryNode1 = (
+      <group>
+        <mesh material={jewelryMaterial} position={[0, 0.2, 0]}>
+          <torusGeometry args={[0.8, 0.02, 16, 100, Math.PI]} />
+        </mesh>
+        <mesh material={diamondMaterial} position={[0, -0.6, 0]}>
+          <octahedronGeometry args={[0.25]} />
+        </mesh>
+      </group>
+    );
+  } else if (product.category === "earring") {
+    geometryNode1 = (
+      <mesh material={diamondMaterial}>
+        <octahedronGeometry args={[0.4]} />
+      </mesh>
+    );
+  }
+
+  return (
+    <>
+      <group ref={meshRef1}>
+        {geometryNode1}
+      </group>
+      {product.placement === "ears" && (
+        <group ref={meshRef2}>
+          {geometryNode1}
+        </group>
+      )}
+    </>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 export default function ARViewport({ product, categoryInfo }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
   const lastTimestampRef = useRef<number>(-1);
-  const overlayImageRef = useRef<HTMLImageElement | null>(null);
   const smoothRef = useRef<SmoothedValues>({
     x: 0, y: 0, w: 100, h: 100, angle: 0,
     x2: 0, y2: 0, w2: 100, h2: 100, angle2: 0,
@@ -55,31 +178,61 @@ export default function ARViewport({ product, categoryInfo }: Props) {
 
   const isMirrored = categoryInfo.camera === "user";
 
-  /* ---------- Preload overlay image on product change ---------- */
-  useEffect(() => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = product.image;
-    img.onload = () => { overlayImageRef.current = img; };
-    img.onerror = () => { overlayImageRef.current = null; };
-  }, [product.image]);
+  /* ================================================================ */
+  /*  COORDINATE MAPPING (Normalized to Object-Cover Container)       */
+  /* ================================================================ */
+  const mapCoordinates = useCallback((nx: number, ny: number) => {
+    const video = videoRef.current;
+    const container = containerRef.current;
+    if (!video || !container) return { x: 0, y: 0 };
+
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+
+    const videoAspect = vw / vh;
+    const containerAspect = cw / ch;
+
+    let renderWidth, renderHeight;
+    if (containerAspect > videoAspect) {
+      renderWidth = cw;
+      renderHeight = cw / videoAspect;
+    } else {
+      renderHeight = ch;
+      renderWidth = ch * videoAspect;
+    }
+
+    const offsetX = (cw - renderWidth) / 2;
+    const offsetY = (ch - renderHeight) / 2;
+
+    // Flip X if mirrored
+    const xRatio = isMirrored ? (1 - nx) : nx;
+    
+    return {
+      x: offsetX + xRatio * renderWidth,
+      y: offsetY + ny * renderHeight,
+      renderWidth,
+      renderHeight
+    };
+  }, [isMirrored]);
 
   /* ================================================================ */
   /*  PLACEMENT STRATEGIES                                             */
   /* ================================================================ */
 
-  /** Ring: place between ring finger MCP (13) and PIP (14) */
-  const drawRing = useCallback(
-    (ctx: CanvasRenderingContext2D, landmarks: { x: number; y: number; z: number }[], w: number, h: number) => {
-      const img = overlayImageRef.current;
-      if (!img) return;
-
+  const updateRing = useCallback(
+    (landmarks: { x: number; y: number; z: number }[]) => {
       const mcp = landmarks[13];
       const pip = landmarks[14];
-      const cx = ((mcp.x + pip.x) / 2) * w;
-      const cy = ((mcp.y + pip.y) / 2) * h;
-      const dx = (pip.x - mcp.x) * w;
-      const dy = (pip.y - mcp.y) * h;
+      const pt1 = mapCoordinates(mcp.x, mcp.y);
+      const pt2 = mapCoordinates(pip.x, pip.y);
+
+      const cx = (pt1.x + pt2.x) / 2;
+      const cy = (pt1.y + pt2.y) / 2;
+      const dx = pt2.x - pt1.x;
+      const dy = pt2.y - pt1.y;
+      
       const angle = Math.atan2(dy, dx) + Math.PI / 2;
       const size = Math.hypot(dx, dy) * 2.2;
 
@@ -88,147 +241,116 @@ export default function ARViewport({ product, categoryInfo }: Props) {
       s.y = lerp(s.y, cy, SMOOTH_FACTOR);
       s.w = lerp(s.w, size, SMOOTH_FACTOR);
       s.angle = lerp(s.angle, angle, SMOOTH_FACTOR);
-
-      ctx.save();
-      ctx.translate(s.x, s.y);
-      ctx.rotate(s.angle);
-      ctx.drawImage(img, -s.w / 2, -s.w / 2, s.w, s.w);
-      ctx.restore();
+      
+      Object.assign(trackingData, s, { active: true });
     },
-    []
+    [mapCoordinates]
   );
 
-  /** Bracelet: place at wrist (landmark 0) */
-  const drawBracelet = useCallback(
-    (ctx: CanvasRenderingContext2D, landmarks: { x: number; y: number; z: number }[], w: number, h: number) => {
-      const img = overlayImageRef.current;
-      if (!img) return;
-
+  const updateBracelet = useCallback(
+    (landmarks: { x: number; y: number; z: number }[]) => {
       const wrist = landmarks[0];
-      const mcp5 = landmarks[17]; // pinky MCP for scale reference
-      const cx = wrist.x * w;
-      const cy = wrist.y * h;
+      const indexMcp = landmarks[5];
+      const pinkyMcp = landmarks[17];
+      
+      const ptWrist = mapCoordinates(wrist.x, wrist.y);
+      const ptIndex = mapCoordinates(indexMcp.x, indexMcp.y);
+      const ptPinky = mapCoordinates(pinkyMcp.x, pinkyMcp.y);
 
-      // Wrist width estimate
-      const dx = (mcp5.x - landmarks[5].x) * w; // pinky MCP to index MCP
-      const dy = (mcp5.y - landmarks[5].y) * h;
+      const cx = ptWrist.x;
+      const cy = ptWrist.y;
+
+      const dx = ptPinky.x - ptIndex.x;
+      const dy = ptPinky.y - ptIndex.y;
       const wristWidth = Math.hypot(dx, dy) * 1.5;
-      const braceletH = wristWidth * (img.height / img.width);
       const angle = Math.atan2(dy, dx);
 
       const s = smoothRef.current;
       s.x = lerp(s.x, cx, SMOOTH_FACTOR);
       s.y = lerp(s.y, cy, SMOOTH_FACTOR);
       s.w = lerp(s.w, wristWidth, SMOOTH_FACTOR);
-      s.h = lerp(s.h, braceletH, SMOOTH_FACTOR);
       s.angle = lerp(s.angle, angle, SMOOTH_FACTOR);
 
-      ctx.save();
-      ctx.translate(s.x, s.y);
-      ctx.rotate(s.angle);
-      ctx.drawImage(img, -s.w / 2, -s.h / 2, s.w, s.h);
-      ctx.restore();
+      Object.assign(trackingData, s, { active: true });
     },
-    []
+    [mapCoordinates]
   );
 
-  /** Necklace: place below chin */
-  const drawNecklace = useCallback(
-    (ctx: CanvasRenderingContext2D, landmarks: { x: number; y: number; z: number }[], w: number, h: number) => {
-      const img = overlayImageRef.current;
-      if (!img) return;
-
+  const updateNecklace = useCallback(
+    (landmarks: { x: number; y: number; z: number }[]) => {
       const chin = landmarks[152];
       const forehead = landmarks[10];
       const leftJaw = landmarks[234];
       const rightJaw = landmarks[454];
 
-      const faceWidth = Math.abs(rightJaw.x - leftJaw.x) * w;
-      const faceHeight = Math.abs(forehead.y - chin.y) * h;
+      const ptChin = mapCoordinates(chin.x, chin.y);
+      const ptForehead = mapCoordinates(forehead.x, forehead.y);
+      const ptLeft = mapCoordinates(leftJaw.x, leftJaw.y);
+      const ptRight = mapCoordinates(rightJaw.x, rightJaw.y);
 
-      const cx = ((leftJaw.x + rightJaw.x) / 2) * w;
-      const cy = chin.y * h + faceHeight * 0.22;
-      const neckW = faceWidth * 1.6;
-      const neckH = neckW * (img.height / img.width);
-      const dx = (rightJaw.x - leftJaw.x) * w;
-      const dy = (rightJaw.y - leftJaw.y) * h;
+      const faceWidth = Math.abs(ptRight.x - ptLeft.x);
+      const faceHeight = Math.abs(ptForehead.y - ptChin.y);
+
+      const cx = (ptLeft.x + ptRight.x) / 2;
+      const cy = ptChin.y + faceHeight * 0.22;
+      const neckW = faceWidth * 0.8;
+      
+      const dx = ptRight.x - ptLeft.x;
+      const dy = ptRight.y - ptLeft.y;
       const angle = Math.atan2(dy, dx);
 
       const s = smoothRef.current;
       s.x = lerp(s.x, cx, SMOOTH_FACTOR);
       s.y = lerp(s.y, cy, SMOOTH_FACTOR);
       s.w = lerp(s.w, neckW, SMOOTH_FACTOR);
-      s.h = lerp(s.h, neckH, SMOOTH_FACTOR);
       s.angle = lerp(s.angle, angle, SMOOTH_FACTOR);
 
-      ctx.save();
-      ctx.translate(s.x, s.y);
-      ctx.rotate(s.angle);
-      ctx.drawImage(img, -s.w / 2, -s.h / 4, s.w, s.h);
-      ctx.restore();
+      Object.assign(trackingData, s, { active: true });
     },
-    []
+    [mapCoordinates]
   );
 
-  /** Earrings: place at left and right ear tragus landmarks */
-  const drawEarrings = useCallback(
-    (ctx: CanvasRenderingContext2D, landmarks: { x: number; y: number; z: number }[], w: number, h: number) => {
-      const img = overlayImageRef.current;
-      if (!img) return;
-
-      // Ear tragus landmarks
-      const leftEar = landmarks[234];   // left ear
-      const rightEar = landmarks[454];  // right ear
+  const updateEarrings = useCallback(
+    (landmarks: { x: number; y: number; z: number }[]) => {
+      const leftEar = landmarks[234];
+      const rightEar = landmarks[454];
       const forehead = landmarks[10];
       const chin = landmarks[152];
 
-      const faceHeight = Math.abs(forehead.y - chin.y) * h;
-      const earringSize = faceHeight * 0.3;
-      const earringH = earringSize * (img.height / img.width);
+      const ptLeft = mapCoordinates(leftEar.x, leftEar.y);
+      const ptRight = mapCoordinates(rightEar.x, rightEar.y);
+      const ptForehead = mapCoordinates(forehead.x, forehead.y);
+      const ptChin = mapCoordinates(chin.x, chin.y);
 
-      // Head tilt
-      const dx = (rightEar.x - leftEar.x) * w;
-      const dy = (rightEar.y - leftEar.y) * h;
+      const faceHeight = Math.abs(ptForehead.y - ptChin.y);
+      const earringSize = faceHeight * 0.3;
+
+      const dx = ptRight.x - ptLeft.x;
+      const dy = ptRight.y - ptLeft.y;
       const angle = Math.atan2(dy, dx);
 
-      // Left earring position (slightly below and outside the ear)
-      const lx = leftEar.x * w - earringSize * 0.15;
-      const ly = leftEar.y * h + earringSize * 0.4;
+      // Left earring
+      const lx = ptLeft.x - earringSize * 0.15 * Math.cos(angle);
+      const ly = ptLeft.y + earringSize * 0.4;
 
-      // Right earring position
-      const rx = rightEar.x * w + earringSize * 0.15;
-      const ry = rightEar.y * h + earringSize * 0.4;
+      // Right earring
+      const rx = ptRight.x + earringSize * 0.15 * Math.cos(angle);
+      const ry = ptRight.y + earringSize * 0.4;
 
       const s = smoothRef.current;
-      // Left earring
       s.x = lerp(s.x, lx, SMOOTH_FACTOR);
       s.y = lerp(s.y, ly, SMOOTH_FACTOR);
       s.w = lerp(s.w, earringSize, SMOOTH_FACTOR);
-      s.h = lerp(s.h, earringH, SMOOTH_FACTOR);
       s.angle = lerp(s.angle, angle, SMOOTH_FACTOR);
-      // Right earring
+      
       s.x2 = lerp(s.x2, rx, SMOOTH_FACTOR);
       s.y2 = lerp(s.y2, ry, SMOOTH_FACTOR);
       s.w2 = lerp(s.w2, earringSize, SMOOTH_FACTOR);
-      s.h2 = lerp(s.h2, earringH, SMOOTH_FACTOR);
       s.angle2 = lerp(s.angle2, angle, SMOOTH_FACTOR);
 
-      // Draw left earring
-      ctx.save();
-      ctx.translate(s.x, s.y);
-      ctx.rotate(s.angle);
-      ctx.drawImage(img, -s.w / 2, 0, s.w, s.h);
-      ctx.restore();
-
-      // Draw right earring (mirrored horizontally)
-      ctx.save();
-      ctx.translate(s.x2, s.y2);
-      ctx.rotate(s.angle2);
-      ctx.scale(-1, 1);
-      ctx.drawImage(img, -s.w2 / 2, 0, s.w2, s.h2);
-      ctx.restore();
+      Object.assign(trackingData, s, { active: true });
     },
-    []
+    [mapCoordinates]
   );
 
   /* ================================================================ */
@@ -236,15 +358,10 @@ export default function ARViewport({ product, categoryInfo }: Props) {
   /* ================================================================ */
   const detect = useCallback(async () => {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2) {
+    if (!video || video.readyState < 2) {
       rafRef.current = requestAnimationFrame(detect);
       return;
     }
-
-    const ctx = canvas.getContext("2d")!;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
 
     const timestamp = performance.now();
     if (timestamp <= lastTimestampRef.current) {
@@ -253,8 +370,6 @@ export default function ARViewport({ product, categoryInfo }: Props) {
     }
     lastTimestampRef.current = timestamp;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
     try {
       if (product.trackingMode === "hand") {
         const handLandmarker = await getHandLandmarker();
@@ -262,18 +377,17 @@ export default function ARViewport({ product, categoryInfo }: Props) {
 
         if (results.landmarks && results.landmarks.length > 0) {
           setDetected(true);
-          for (const landmarks of results.landmarks) {
-            if (product.placement === "ring-finger") {
-              drawRing(ctx, landmarks, canvas.width, canvas.height);
-            } else if (product.placement === "wrist") {
-              drawBracelet(ctx, landmarks, canvas.width, canvas.height);
-            }
+          const landmarks = results.landmarks[0];
+          if (product.placement === "ring-finger") {
+            updateRing(landmarks);
+          } else if (product.placement === "wrist") {
+            updateBracelet(landmarks);
           }
         } else {
           setDetected(false);
+          trackingData.active = false;
         }
       } else {
-        // face tracking
         const faceLandmarker = await getFaceLandmarker();
         const results = faceLandmarker.detectForVideo(video, timestamp);
 
@@ -281,20 +395,22 @@ export default function ARViewport({ product, categoryInfo }: Props) {
           setDetected(true);
           const landmarks = results.faceLandmarks[0];
           if (product.placement === "neck") {
-            drawNecklace(ctx, landmarks, canvas.width, canvas.height);
+            updateNecklace(landmarks);
           } else if (product.placement === "ears") {
-            drawEarrings(ctx, landmarks, canvas.width, canvas.height);
+            updateEarrings(landmarks);
           }
         } else {
           setDetected(false);
+          trackingData.active = false;
         }
       }
     } catch (err) {
       console.error("Detection error:", err);
+      trackingData.active = false;
     }
 
     rafRef.current = requestAnimationFrame(detect);
-  }, [product.trackingMode, product.placement, drawRing, drawBracelet, drawNecklace, drawEarrings]);
+  }, [product.trackingMode, product.placement, updateRing, updateBracelet, updateNecklace, updateEarrings]);
 
   /* ================================================================ */
   /*  Camera + Detector init                                           */
@@ -306,15 +422,14 @@ export default function ARViewport({ product, categoryInfo }: Props) {
     const init = async () => {
       setStatus("loading");
       setDetected(false);
+      trackingData.active = false;
       lastTimestampRef.current = -1;
 
-      // Reset smooth values
       smoothRef.current = {
         x: 0, y: 0, w: 100, h: 100, angle: 0,
         x2: 0, y2: 0, w2: 100, h2: 100, angle2: 0,
       };
 
-      // Stop previous stream
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
@@ -342,7 +457,6 @@ export default function ARViewport({ product, categoryInfo }: Props) {
           await videoRef.current.play();
         }
 
-        // Warm up the right detector
         if (product.trackingMode === "hand") {
           await getHandLandmarker();
         } else {
@@ -374,35 +488,6 @@ export default function ARViewport({ product, categoryInfo }: Props) {
     };
   }, [categoryInfo.camera, product.trackingMode, detect]);
 
-  /* ---------- Screenshot ---------- */
-  const takeScreenshot = useCallback(() => {
-    const video = videoRef.current;
-    const overlay = canvasRef.current;
-    if (!video || !overlay) return;
-
-    const shot = document.createElement("canvas");
-    shot.width = video.videoWidth;
-    shot.height = video.videoHeight;
-    const ctx = shot.getContext("2d")!;
-
-    if (isMirrored) {
-      ctx.translate(shot.width, 0);
-      ctx.scale(-1, 1);
-    }
-    ctx.drawImage(video, 0, 0);
-    if (isMirrored) {
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.translate(shot.width, 0);
-      ctx.scale(-1, 1);
-    }
-    ctx.drawImage(overlay, 0, 0);
-
-    const link = document.createElement("a");
-    link.download = `${product.category}-tryon-${Date.now()}.png`;
-    link.href = shot.toDataURL("image/png");
-    link.click();
-  }, [product.category, isMirrored]);
-
   /* ================================================================ */
   /*  Render                                                           */
   /* ================================================================ */
@@ -431,7 +516,7 @@ export default function ARViewport({ product, categoryInfo }: Props) {
     : categoryInfo.waitingLabel;
 
   return (
-    <div className="relative w-full h-full flex flex-col overflow-hidden bg-black rounded-3xl">
+    <div ref={containerRef} className="relative w-full h-full flex flex-col overflow-hidden bg-black rounded-3xl">
       <div className="relative flex-1 min-h-0">
         {/* Video feed */}
         <video
@@ -443,24 +528,30 @@ export default function ARViewport({ product, categoryInfo }: Props) {
           style={isMirrored ? { transform: "scaleX(-1)" } : undefined}
         />
 
-        {/* AR overlay canvas */}
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={isMirrored ? { transform: "scaleX(-1)" } : undefined}
-        />
+        {/* 3D Canvas Overlay (replaces 2D canvas) */}
+        <div className="absolute inset-0 w-full h-full pointer-events-none z-10">
+          <Canvas gl={{ alpha: true, antialias: true }}>
+            <OrthographicCamera makeDefault position={[0, 0, 1000]} zoom={1} near={0.1} far={2000} />
+            <Suspense fallback={null}>
+              <Environment preset="studio" />
+              <ARModel product={product} />
+            </Suspense>
+            <ambientLight intensity={1.5} />
+            <directionalLight position={[10, 10, 5]} intensity={2} />
+          </Canvas>
+        </div>
 
         {/* Scan border */}
-        <div className="absolute inset-0 border-2 border-white/10 rounded-3xl pointer-events-none" />
+        <div className="absolute inset-0 border-2 border-white/10 rounded-3xl pointer-events-none z-20" />
 
         {/* Corner scan markers */}
-        <div className="absolute top-3 left-3 w-6 h-6 border-t-2 border-l-2 border-white/20 rounded-tl-lg pointer-events-none" />
-        <div className="absolute top-3 right-3 w-6 h-6 border-t-2 border-r-2 border-white/20 rounded-tr-lg pointer-events-none" />
-        <div className="absolute bottom-3 left-3 w-6 h-6 border-b-2 border-l-2 border-white/20 rounded-bl-lg pointer-events-none" />
-        <div className="absolute bottom-3 right-3 w-6 h-6 border-b-2 border-r-2 border-white/20 rounded-br-lg pointer-events-none" />
+        <div className="absolute top-3 left-3 w-6 h-6 border-t-2 border-l-2 border-white/20 rounded-tl-lg pointer-events-none z-20" />
+        <div className="absolute top-3 right-3 w-6 h-6 border-t-2 border-r-2 border-white/20 rounded-tr-lg pointer-events-none z-20" />
+        <div className="absolute bottom-3 left-3 w-6 h-6 border-b-2 border-l-2 border-white/20 rounded-bl-lg pointer-events-none z-20" />
+        <div className="absolute bottom-3 right-3 w-6 h-6 border-b-2 border-r-2 border-white/20 rounded-br-lg pointer-events-none z-20" />
 
         {/* Status pill */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30">
           <span className={`inline-flex items-center gap-2 px-5 py-2 rounded-full backdrop-blur-xl text-xs tracking-[0.15em] uppercase border transition-all duration-500 ${statusColor}`}>
             <span className={`w-2 h-2 rounded-full ${dotColor}`} />
             {statusText}
@@ -468,7 +559,7 @@ export default function ARViewport({ product, categoryInfo }: Props) {
         </div>
 
         {/* Current product info badge */}
-        <div className="absolute bottom-4 left-4 z-10">
+        <div className="absolute bottom-4 left-4 z-30">
           <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-black/50 backdrop-blur-xl border border-white/10">
             <div className="w-8 h-8 rounded-lg bg-white/10 overflow-hidden flex-shrink-0">
               <img
@@ -483,20 +574,6 @@ export default function ARViewport({ product, categoryInfo }: Props) {
             </div>
           </div>
         </div>
-
-        {/* Screenshot button */}
-        {status !== "loading" && status !== "error" && (
-          <button
-            onClick={takeScreenshot}
-            className="absolute bottom-4 right-4 z-10 w-12 h-12 rounded-full bg-white/10 backdrop-blur-xl border border-white/20 flex items-center justify-center hover:bg-white/20 hover:scale-110 transition-all active:scale-90"
-            title="Capture screenshot"
-          >
-            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Z" />
-            </svg>
-          </button>
-        )}
       </div>
     </div>
   );
