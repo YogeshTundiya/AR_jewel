@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, Suspense } from "react";
+import { useEffect, useRef, useState, useCallback, Suspense, useMemo } from "react";
 import { getHandLandmarker, getFaceLandmarker, disposeDetectors } from "@/lib/mediapipe";
 import type { JewelryProduct, CategoryInfo } from "@/lib/jewelry-catalog";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Environment, OrthographicCamera, ContactShadows } from "@react-three/drei";
+import { Environment, OrthographicCamera, ContactShadows, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 
 /* ------------------------------------------------------------------ */
@@ -44,12 +44,41 @@ const trackingData = {
 };
 
 /* ------------------------------------------------------------------ */
+/*  3D Model Configuration                                            */
+/* ------------------------------------------------------------------ */
+const modelConfig: Record<string, { url: string; baseScale: number; baseRotation: [number, number, number] }> = {
+  "ring-diamond": { url: "/3D/ring-diamond.glb", baseScale: 0.15, baseRotation: [Math.PI / 2, 0, 0] },
+  "ring-sapphire": { url: "/3D/ring-diamond.glb", baseScale: 0.15, baseRotation: [Math.PI / 2, 0, 0] }, // Fallback
+  "bracelet-gold": { url: "/3D/bracelet-gold.glb", baseScale: 0.25, baseRotation: [Math.PI / 2, 0, 0] },
+  "necklace-gold": { url: "/3D/necklace-gold.glb", baseScale: 0.4, baseRotation: [0, 0, 0] },
+  "necklace-pearl": { url: "/3D/necklace-pearl.glb", baseScale: 0.4, baseRotation: [0, 0, 0] },
+  "earring-diamond": { url: "/3D/earrings-diamond.glb", baseScale: 0.1, baseRotation: [0, 0, 0] },
+  "earring-hoop": { url: "/3D/earrings-hoop.glb", baseScale: 0.1, baseRotation: [0, 0, 0] }
+};
+
+// Preload models so they instantly appear when switching
+if (typeof window !== "undefined") {
+  Object.values(modelConfig).forEach((config) => {
+    useGLTF.preload(config.url);
+  });
+}
+
+function GLTFModelNode({ url }: { url: string }) {
+  const { scene } = useGLTF(url);
+  // Clone scene so we can use it multiple times (e.g. for two earrings)
+  const clonedScene = useMemo(() => scene.clone(), [scene]);
+  return <primitive object={clonedScene} />;
+}
+
+/* ------------------------------------------------------------------ */
 /*  3D Model Component (Phase 3 HDRI Lighting)                         */
 /* ------------------------------------------------------------------ */
 function ARModel({ product }: { product: JewelryProduct }) {
   const meshRef1 = useRef<THREE.Group>(null);
   const meshRef2 = useRef<THREE.Group>(null);
   const { size } = useThree();
+
+  const config = modelConfig[product.id] || modelConfig["ring-diamond"];
 
   useFrame(() => {
     if (!trackingData.active) {
@@ -68,8 +97,9 @@ function ARModel({ product }: { product: JewelryProduct }) {
     if (meshRef1.current) {
       meshRef1.current.visible = true;
       meshRef1.current.position.set(px1, py1, 0);
-      meshRef1.current.rotation.z = -trackingData.angle;
-      const scale = trackingData.w;
+      meshRef1.current.rotation.set(config.baseRotation[0], config.baseRotation[1], config.baseRotation[2] - trackingData.angle);
+      
+      const scale = trackingData.w * config.baseScale;
       meshRef1.current.scale.set(scale, scale, scale);
     }
     
@@ -78,80 +108,23 @@ function ARModel({ product }: { product: JewelryProduct }) {
       const px2 = trackingData.x2 - w / 2;
       const py2 = -(trackingData.y2 - h / 2);
       meshRef2.current.position.set(px2, py2, 0);
-      meshRef2.current.rotation.z = -trackingData.angle2;
-      meshRef2.current.scale.set(trackingData.w2, trackingData.w2, trackingData.w2);
+      meshRef2.current.rotation.set(config.baseRotation[0], config.baseRotation[1], config.baseRotation[2] - trackingData.angle2);
+      
+      const scale2 = trackingData.w2 * config.baseScale;
+      meshRef2.current.scale.set(scale2, scale2, scale2);
     } else if (meshRef2.current) {
       meshRef2.current.visible = false;
     }
   });
 
-  const isGold = product.name.toLowerCase().includes("gold");
-  const jewelryMaterial = new THREE.MeshStandardMaterial({
-    color: isGold ? "#ffcf40" : "#e0e5ec",
-    metalness: 1.0,
-    roughness: 0.05,
-    envMapIntensity: 2.5
-  });
-
-  const diamondMaterial = new THREE.MeshPhysicalMaterial({
-    color: "#ffffff",
-    metalness: 0.1,
-    roughness: 0.0,
-    transmission: 0.9,
-    ior: 2.4,
-    thickness: 0.5,
-    envMapIntensity: 3.0
-  });
-
-  // Render placeholder high-end geometry based on category
-  let geometryNode1;
-  
-  if (product.category === "ring") {
-    geometryNode1 = (
-      <group>
-        <mesh material={jewelryMaterial} rotation={[Math.PI / 2, 0, 0]}>
-          <torusGeometry args={[0.4, 0.08, 32, 100]} />
-        </mesh>
-        {!isGold && (
-          <mesh material={diamondMaterial} position={[0, -0.4, 0.1]}>
-            <octahedronGeometry args={[0.2]} />
-          </mesh>
-        )}
-      </group>
-    );
-  } else if (product.category === "bracelet") {
-    geometryNode1 = (
-      <mesh material={jewelryMaterial}>
-        <torusGeometry args={[0.45, 0.06, 32, 100]} />
-      </mesh>
-    );
-  } else if (product.category === "necklace") {
-    geometryNode1 = (
-      <group>
-        <mesh material={jewelryMaterial} position={[0, 0.2, 0]}>
-          <torusGeometry args={[0.8, 0.02, 16, 100, Math.PI]} />
-        </mesh>
-        <mesh material={diamondMaterial} position={[0, -0.6, 0]}>
-          <octahedronGeometry args={[0.25]} />
-        </mesh>
-      </group>
-    );
-  } else if (product.category === "earring") {
-    geometryNode1 = (
-      <mesh material={diamondMaterial}>
-        <octahedronGeometry args={[0.4]} />
-      </mesh>
-    );
-  }
-
   return (
     <>
       <group ref={meshRef1}>
-        {geometryNode1}
+        <GLTFModelNode url={config.url} />
       </group>
       {product.placement === "ears" && (
         <group ref={meshRef2}>
-          {geometryNode1}
+          <GLTFModelNode url={config.url} />
         </group>
       )}
     </>
